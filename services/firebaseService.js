@@ -24,20 +24,33 @@ class FirebaseService {
           title: firebaseMessage.title,
           body: firebaseMessage.body
         },
-        data: firebaseMessage.data || {}
+        data: this.convertDataToStrings(firebaseMessage.data || {})
       };
 
+      console.log(`Enviando mensagem para token: ${firebaseMessage.token.substring(0, 20)}...`);
       const response = await this.messaging.send(message);
       
       result.success = true;
       result.messageId = response;
+      console.log(`✓ Mensagem enviada com sucesso. MessageId: ${response}`);
     } catch (error) {
       result.success = false;
       result.error = error.message;
+      result.errorCode = error.code || 'unknown';
       
-      // Log específico para tokens inválidos
+      console.error(`✗ Erro ao enviar mensagem:`, {
+        token: firebaseMessage.token.substring(0, 20) + '...',
+        error: error.message,
+        code: error.code
+      });
+
+      // Log específico para diferentes tipos de erro
       if (error.code === 'messaging/registration-token-not-registered') {
-        console.warn(`Token inválido ou não registrado: ${firebaseMessage.token}`);
+        console.warn(`Token não registrado: ${firebaseMessage.token.substring(0, 20)}...`);
+      } else if (error.code === 'messaging/invalid-registration-token') {
+        console.warn(`Token inválido: ${firebaseMessage.token.substring(0, 20)}...`);
+      } else if (error.code === 'messaging/mismatched-credential') {
+        console.error('Erro de credenciais do Firebase');
       }
     }
 
@@ -45,46 +58,61 @@ class FirebaseService {
   }
 
   /**
-   * Envia mensagens em lote com controle de concorrência
+   * Envia mensagens em lote com controle de concorrência (usando envios individuais)
    */
-  async sendBulkMessagesAsync(bulkMessage, batchSize = 100, maxConcurrency = 10) {
+  async sendBulkMessagesAsync(bulkMessage, batchSize = 100, maxConcurrency = 5) {
+    console.log(`=== Iniciando envio em lote ===`);
+    console.log(`Total de tokens: ${bulkMessage.tokens.length}`);
+    console.log(`Concorrência máxima: ${maxConcurrency}`);
+
     const result = new FirebaseBulkResult(bulkMessage.tokens.length);
 
     if (!bulkMessage.tokens || bulkMessage.tokens.length === 0) {
+      console.log('Nenhum token fornecido para envio em lote');
       result.finalize();
       return result;
     }
 
-    // Criar lotes
-    const batches = this.createBatches(bulkMessage.tokens, batchSize);
-
-    // Processar lotes com controle de concorrência
+    // Processar tokens com controle de concorrência
     const semaphore = new Semaphore(maxConcurrency);
 
-    const batchPromises = batches.map(async (batch) => {
+    const tokenPromises = bulkMessage.tokens.map(async (token, index) => {
       await semaphore.acquire();
       try {
-        return await this.processBatchAsync(batch, bulkMessage);
+        console.log(`Processando token ${index + 1}/${bulkMessage.tokens.length}`);
+        
+        const message = new FirebaseMessage(
+          token,
+          bulkMessage.title,
+          bulkMessage.body,
+          bulkMessage.data
+        );
+        
+        return await this.sendMessageAsync(message);
       } finally {
         semaphore.release();
       }
     });
 
-    const batchResults = await Promise.all(batchPromises);
+    const tokenResults = await Promise.all(tokenPromises);
 
     // Consolidar resultados
-    batchResults.forEach(batchResult => {
-      batchResult.forEach(singleResult => {
-        result.addResult(singleResult);
-      });
+    tokenResults.forEach(singleResult => {
+      result.addResult(singleResult);
     });
 
     result.finalize();
+    
+    console.log(`=== Envio em lote finalizado ===`);
+    console.log(`Sucessos: ${result.successCount}`);
+    console.log(`Falhas: ${result.failureCount}`);
+    console.log(`Duração: ${result.duration}ms`);
+
     return result;
   }
 
   /**
-   * Envia mensagem para um tópico
+   * Envia para tópico
    */
   async sendToTopicAsync(topic, title, body, data = {}) {
     const result = new FirebaseSendResult(`topic:${topic}`);
@@ -96,65 +124,84 @@ class FirebaseService {
           title: title,
           body: body
         },
-        data: data
+        data: this.convertDataToStrings(data)
       };
 
+      console.log(`Enviando mensagem para tópico: ${topic}`);
       const response = await this.messaging.send(message);
       
       result.success = true;
       result.messageId = response;
+      console.log(`✓ Mensagem enviada para tópico com sucesso. MessageId: ${response}`);
     } catch (error) {
       result.success = false;
       result.error = error.message;
+      result.errorCode = error.code || 'unknown';
+      console.error(`✗ Erro ao enviar para tópico ${topic}:`, error.message);
     }
 
     return result;
   }
 
   /**
-   * Envia múltiplas mensagens usando multicast (mais eficiente)
+   * Método alternativo usando multicast (caso queira testar depois)
    */
   async sendMulticastAsync(tokens, title, body, data = {}) {
     const result = new FirebaseBulkResult(tokens.length);
 
     if (!tokens || tokens.length === 0) {
+      console.log('Nenhum token fornecido para multicast');
       result.finalize();
       return result;
     }
 
     try {
-      const message = {
-        tokens: tokens,
-        notification: {
-          title: title,
-          body: body
-        },
-        data: data || {}
-      };
+      // Dividir em lotes menores para evitar problemas
+      const batchSize = 500; // Firebase permite até 500 tokens por multicast
+      const batches = this.createBatches(tokens, batchSize);
+      
+      console.log(`Enviando multicast em ${batches.length} lotes`);
 
-      const response = await this.messaging.sendMulticast(message);
-
-      // Processar resultados
-      response.responses.forEach((resp, index) => {
-        const singleResult = new FirebaseSendResult(tokens[index]);
+      for (const [batchIndex, batch] of batches.entries()) {
+        console.log(`Processando lote ${batchIndex + 1}/${batches.length} com ${batch.length} tokens`);
         
-        if (resp.success) {
-          singleResult.success = true;
-          singleResult.messageId = resp.messageId;
-        } else {
-          singleResult.success = false;
-          singleResult.error = resp.error?.message || 'Unknown error';
-        }
+        const message = {
+          tokens: batch,
+          notification: {
+            title: title,
+            body: body
+          },
+          data: this.convertDataToStrings(data)
+        };
 
-        result.addResult(singleResult);
-      });
+        const response = await this.messaging.sendMulticast(message);
+        console.log(`Lote ${batchIndex + 1}: Sucessos: ${response.successCount}, Falhas: ${response.failureCount}`);
+
+        // Processar resultados do lote
+        response.responses.forEach((resp, index) => {
+          const singleResult = new FirebaseSendResult(batch[index]);
+          
+          if (resp.success) {
+            singleResult.success = true;
+            singleResult.messageId = resp.messageId;
+          } else {
+            singleResult.success = false;
+            singleResult.error = resp.error?.message || 'Unknown error';
+            singleResult.errorCode = resp.error?.code || 'unknown';
+          }
+
+          result.addResult(singleResult);
+        });
+      }
 
     } catch (error) {
+      console.error('Erro no multicast:', error.message);
       // Se falhar completamente, marcar todos como falha
       tokens.forEach(token => {
         const singleResult = new FirebaseSendResult(token);
         singleResult.success = false;
         singleResult.error = error.message;
+        singleResult.errorCode = error.code || 'unknown';
         result.addResult(singleResult);
       });
     }
@@ -175,18 +222,14 @@ class FirebaseService {
   }
 
   /**
-   * Processa um lote de tokens
+   * Converte todos os valores do data para string (requerido pelo Firebase)
    */
-  async processBatchAsync(tokenBatch, bulkMessage) {
-    // Usar multicast para melhor performance
-    const result = await this.sendMulticastAsync(
-      tokenBatch,
-      bulkMessage.title,
-      bulkMessage.body,
-      bulkMessage.data
-    );
-
-    return result.results;
+  convertDataToStrings(data) {
+    const stringData = {};
+    for (const [key, value] of Object.entries(data)) {
+      stringData[key] = String(value);
+    }
+    return stringData;
   }
 }
 

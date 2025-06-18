@@ -44,6 +44,7 @@ class FirebaseSendResult {
     this.success = false;
     this.messageId = null;
     this.error = null;
+    this.errorCode = null;
     this.token = token;
   }
 }
@@ -77,6 +78,23 @@ class FirebaseBulkResult {
 
   get failedTokens() {
     return this.results.filter(r => !r.success).map(r => r.token);
+  }
+
+  get errorSummary() {
+    const errors = {};
+    this.results.filter(r => !r.success).forEach(r => {
+      const errorKey = r.errorCode || 'unknown';
+      if (!errors[errorKey]) {
+        errors[errorKey] = {
+          count: 0,
+          message: r.error,
+          tokens: []
+        };
+      }
+      errors[errorKey].count++;
+      errors[errorKey].tokens.push(r.token.substring(0, 20) + '...');
+    });
+    return errors;
   }
 }
 

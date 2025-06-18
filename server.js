@@ -2,9 +2,11 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const db = require('./config/database');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3004;
+const PORT = process.env.PORT || 3000;
 
 // Configurações de segurança
 app.use(helmet({
@@ -36,113 +38,49 @@ app.use((req, res, next) => {
   next();
 });
 
+// Importar controller
+const FirebaseController = require('./controllers/firebaseController');
+const firebaseController = new FirebaseController();
+
 // Rota raiz
 app.get('/', (req, res) => {
   res.json({
-    message: 'Firebase Push Notification API',
+    message: 'Firebase Push Notification API com SQL Server',
     version: '1.0.0',
     status: 'online',
+    database: db.isConnected() ? 'conectado' : 'desconectado',
     timestamp: new Date().toISOString()
   });
 });
 
-// Rotas Firebase - definidas diretamente no server.js para evitar problemas
+// Rotas Firebase
 app.get('/api/firebase/test', (req, res) => {
   res.json({
     message: 'Firebase API funcionando!',
+    database: db.isConnected() ? 'conectado' : 'desconectado',
     timestamp: new Date().toISOString()
   });
 });
 
-app.post('/api/firebase/enviarFirebasePushNotification', async (req, res) => {
-  try {
-    console.log('Recebida requisição para notificação única:', req.body);
-    
-    // Validação básica
-    const { idSocio, title, body } = req.body;
-    
-    if (!idSocio || !title || !body) {
-      return res.status(400).json({
-        success: false,
-        error: 'Campos obrigatórios: idSocio, title, body'
-      });
-    }
+app.get('/api/firebase/test-db', 
+  firebaseController.testeConexaoBanco.bind(firebaseController)
+);
 
-    // Aqui você implementaria a lógica do Firebase
-    // Por enquanto, vamos simular
-    res.json({
-      success: true,
-      message: 'Notificação enviada com sucesso (simulado)',
-      idSocio: idSocio,
-      timestamp: new Date().toISOString()
-    });
+app.post('/api/firebase/enviarFirebasePushNotification', 
+  firebaseController.enviarFirebasePushNotification.bind(firebaseController)
+);
 
-  } catch (error) {
-    console.error('Erro:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
+app.post('/api/firebase/enviarFirebasePushNotificationTokens', 
+  firebaseController.enviarFirebasePushNotificationTokens.bind(firebaseController)
+);
 
-app.post('/api/firebase/enviarFirebasePushNotificationTokens', async (req, res) => {
-  try {
-    console.log('Recebida requisição para notificações em lote:', req.body);
-    
-    const { idsSocios, title, body } = req.body;
-    
-    if (!idsSocios || !Array.isArray(idsSocios) || !title || !body) {
-      return res.status(400).json({
-        success: false,
-        error: 'Campos obrigatórios: idsSocios (array), title, body'
-      });
-    }
+app.post('/api/firebase/enviarFirebasePushNotificationAll', 
+  firebaseController.enviarFirebasePushNotificationAll.bind(firebaseController)
+);
 
-    res.json({
-      success: true,
-      message: 'Notificações em lote enviadas com sucesso (simulado)',
-      totalTokens: idsSocios.length,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Erro:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-app.post('/api/firebase/enviarFirebasePushNotificationAll', async (req, res) => {
-  try {
-    console.log('Recebida requisição para notificação por tópico:', req.body);
-    
-    const { topic, title, body } = req.body;
-    
-    if (!topic || !title || !body) {
-      return res.status(400).json({
-        success: false,
-        error: 'Campos obrigatórios: topic, title, body'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'Notificação por tópico enviada com sucesso (simulado)',
-      topic: topic,
-      timestamp: new Date().toISOString()
-    });
-
-  } catch (error) {
-    console.error('Erro:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
-});
+app.post('/api/firebase/enviarFirebasePushNotificationVeiculo', 
+  firebaseController.enviarFirebasePushNotificationVeiculo.bind(firebaseController)
+);
 
 // Middleware para rotas não encontradas
 app.use('*', (req, res) => {
@@ -162,20 +100,50 @@ app.use((error, req, res, next) => {
   });
 });
 
-// Iniciar servidor
-app.listen(PORT, () => {
-  console.log('🚀 ========================================');
-  console.log(`🚀 Servidor Firebase API iniciado!`);
-  console.log(`🚀 Porta: ${PORT}`);
-  console.log(`🚀 URL: http://localhost:${PORT}`);
-  console.log('🚀 ========================================');
-  console.log('📱 Endpoints:');
-  console.log(`   GET  http://localhost:${PORT}/`);
-  console.log(`   GET  http://localhost:${PORT}/api/firebase/test`);
-  console.log(`   POST http://localhost:${PORT}/api/firebase/enviarFirebasePushNotification`);
-  console.log(`   POST http://localhost:${PORT}/api/firebase/enviarFirebasePushNotificationTokens`);
-  console.log(`   POST http://localhost:${PORT}/api/firebase/enviarFirebasePushNotificationAll`);
-  console.log('🚀 ========================================');
+// Inicializar conexão com banco e servidor
+async function startServer() {
+  try {
+    // Conectar ao banco de dados
+    await db.connect();
+    
+    // Iniciar servidor
+    app.listen(PORT, () => {
+      console.log('🚀 ========================================');
+      console.log(`🚀 Servidor Firebase API iniciado!`);
+      console.log(`🚀 Porta: ${PORT}`);
+      console.log(`🚀 URL: http://localhost:${PORT}`);
+      console.log(`🚀 Banco: ${db.isConnected() ? '✓ Conectado' : '✗ Desconectado'}`);
+      console.log('🚀 ========================================');
+      console.log('📱 Endpoints:');
+      console.log(`   GET  http://localhost:${PORT}/`);
+      console.log(`   GET  http://localhost:${PORT}/api/firebase/test`);
+      console.log(`   GET  http://localhost:${PORT}/api/firebase/test-db`);
+      console.log(`   POST http://localhost:${PORT}/api/firebase/enviarFirebasePushNotification`);
+      console.log(`   POST http://localhost:${PORT}/api/firebase/enviarFirebasePushNotificationTokens`);
+      console.log(`   POST http://localhost:${PORT}/api/firebase/enviarFirebasePushNotificationAll`);
+      console.log(`   POST http://localhost:${PORT}/api/firebase/enviarFirebasePushNotificationVeiculo`);
+      console.log('🚀 ========================================');
+    });
+  } catch (error) {
+    console.error('❌ Erro ao iniciar servidor:', error);
+    process.exit(1);
+  }
+}
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM recebido, fechando servidor...');
+  await db.disconnect();
+  process.exit(0);
 });
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT recebido, fechando servidor...');
+  await db.disconnect();
+  process.exit(0);
+});
+
+// Iniciar servidor
+startServer();
 
 module.exports = app;
